@@ -271,13 +271,13 @@ func Test_WithInsecure(t *testing.T) {
 	})
 }
 
-func Test_WithInsecureWithTLS(t *testing.T) {
+func Test_WithTLSInsecure(t *testing.T) {
 	cfg := &config{}
 
-	mockey.PatchConvey("Test WithInsecureWithTLS", t, func() {
-		option := WithInsecureWithTLS()
+	mockey.PatchConvey("Test WithTLSInsecure", t, func() {
+		option := WithTLSInsecure()
 		option.apply(cfg)
-		convey.So(cfg.exportInsecureWithTLS, convey.ShouldBeTrue)
+		convey.So(cfg.exportTLSInsecure, convey.ShouldBeTrue)
 	})
 }
 

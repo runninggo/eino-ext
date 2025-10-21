@@ -84,7 +84,7 @@ func NewOpenTelemetryProvider(opts ...Option) (*OtelProvider, error) {
 		}
 		if cfg.exportInsecure {
 			traceClientOpts = append(traceClientOpts, otlptracegrpc.WithInsecure())
-		} else if cfg.exportInsecureWithTLS {
+		} else if cfg.exportTLSInsecure {
 			traceClientOpts = append(traceClientOpts, otlptracegrpc.WithTLSCredentials(credentials.NewClientTLSFromCert(nil, "")))
 		}
 
@@ -122,7 +122,7 @@ func NewOpenTelemetryProvider(opts ...Option) (*OtelProvider, error) {
 		}
 		if cfg.exportInsecure {
 			metricsClientOpts = append(metricsClientOpts, otlpmetricgrpc.WithInsecure())
-		} else if cfg.exportInsecureWithTLS {
+		} else if cfg.exportTLSInsecure {
 			metricsClientOpts = append(metricsClientOpts, otlpmetricgrpc.WithTLSCredentials(credentials.NewClientTLSFromCert(nil, "")))
 		}
 
