@@ -39,6 +39,9 @@ import (
 var _ model.ToolCallingChatModel = (*ChatModel)(nil)
 var CallbackMetricsExtraKey = "ollama_metrics"
 
+type Options = api.Options
+type ThinkValue = api.ThinkValue
+
 // ChatModelConfig stores configuration options specific to Ollama
 type ChatModelConfig struct {
 	BaseURL string        `json:"base_url"`
@@ -53,9 +56,9 @@ type ChatModelConfig struct {
 	Format    json.RawMessage `json:"format"`
 	KeepAlive *time.Duration  `json:"keep_alive"`
 
-	Options *api.Options `json:"options"`
+	Options *Options `json:"options"`
 
-	Thinking *api.ThinkValue `json:"thinking"`
+	Thinking *ThinkValue `json:"thinking"`
 }
 
 // Check if ChatModel implements model.ChatModel
@@ -289,6 +292,10 @@ func (cm *ChatModel) genRequest(_ context.Context, stream bool, in []*schema.Mes
 		return nil, nil, fmt.Errorf("error convert messages: %w", err)
 	}
 
+	if len(mo.AllowedToolNames) > 0 {
+		return nil, nil, fmt.Errorf("not support allowed tool names parameter")
+	}
+
 	tools, err := toOllamaTools(mo.Tools)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error convert tools: %w", err)
@@ -371,8 +378,8 @@ func toOllamaMessage(einoMsg *schema.Message) (api.Message, error) {
 	}
 
 	if len(einoMsg.UserInputMultiContent) > 0 {
-		if einoMsg.Role != schema.User {
-			return api.Message{}, fmt.Errorf("user input multi content only support user role, got %s", einoMsg.Role)
+		if einoMsg.Role != schema.User && einoMsg.Role != schema.Tool {
+			return api.Message{}, fmt.Errorf("user input multi content only support user&tool role, got %s", einoMsg.Role)
 		}
 		for _, part := range einoMsg.UserInputMultiContent {
 			switch part.Type {

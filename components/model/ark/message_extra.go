@@ -22,15 +22,16 @@ import (
 )
 
 const (
-	keyOfRequestID        = "ark-request-id"
-	keyOfReasoningContent = "ark-reasoning-content"
-	keyOfModelName        = "ark-model-name"
-	videoURLFPS           = "ark-model-video-url-fps"
-	keyOfContextID        = "ark-context-id"
-	keyOfResponseID       = "ark-response-id"
-	keyOfResponseCaching  = "ark-response-caching"
-	keyOfServiceTier      = "ark-service-tier"
-	ImageSizeKey          = "seedream-image-size"
+	keyOfRequestID             = "ark-request-id"
+	keyOfReasoningContent      = "ark-reasoning-content"
+	keyOfModelName             = "ark-model-name"
+	videoURLFPS                = "ark-model-video-url-fps"
+	keyOfContextID             = "ark-context-id"
+	keyOfResponseID            = "ark-response-id"
+	keyOfResponseCacheExpireAt = "ark-response-cache-expire-at"
+	keyOfServiceTier           = "ark-service-tier"
+	keyOfPartial               = "ark-partial"
+	ImageSizeKey               = "seedream-image-size"
 )
 
 type arkRequestID string
@@ -38,6 +39,7 @@ type arkModelName string
 type arkServiceTier string
 type arkResponseID string
 type arkContextID string
+type arkResponseCacheExpireAt int64
 
 func init() {
 	compose.RegisterStreamChunkConcatFunc(func(chunks []arkRequestID) (final arkRequestID, err error) {
@@ -63,14 +65,6 @@ func init() {
 		return chunks[len(chunks)-1], nil
 	})
 	schema.RegisterName[arkServiceTier]("_eino_ext_ark_service_tier")
-
-	compose.RegisterStreamChunkConcatFunc(func(chunks []caching) (final caching, err error) {
-		if len(chunks) == 0 {
-			return "", nil
-		}
-		return chunks[len(chunks)-1], nil
-	})
-	schema.RegisterName[caching]("_eino_ext_ark_response_caching")
 
 	compose.RegisterStreamChunkConcatFunc(func(chunks []arkContextID) (final arkContextID, err error) {
 		if len(chunks) == 0 {
@@ -99,6 +93,14 @@ func init() {
 		return "", nil
 	})
 	schema.RegisterName[arkResponseID]("_eino_ext_ark_response_id")
+
+	compose.RegisterStreamChunkConcatFunc(func(chunks []arkResponseCacheExpireAt) (final arkResponseCacheExpireAt, err error) {
+		if len(chunks) == 0 {
+			return 0, nil
+		}
+		return chunks[len(chunks)-1], nil
+	})
+	schema.RegisterName[arkResponseCacheExpireAt]("_eino_ext_ark_response_cache_expire_at")
 }
 
 func GetArkRequestID(msg *schema.Message) string {
@@ -151,6 +153,21 @@ func setContextID(msg *schema.Message, contextID string) {
 	setMsgExtra(msg, keyOfContextID, arkContextID(contextID))
 }
 
+// InvalidateMessageCaches disables caching for the specified messages.
+// When a message is modified, ARK invalidates caches for that message and all subsequent ones.
+// Call this to mark those message caches as invalid.
+func InvalidateMessageCaches(messages []*schema.Message) error {
+	for _, msg := range messages {
+		expireAtSec, ok := GetCacheExpiration(msg)
+		if !ok || expireAtSec <= 0 {
+			continue
+		}
+
+		delete(msg.Extra, keyOfResponseCacheExpireAt)
+	}
+	return nil
+}
+
 // GetResponseID returns the response ID from the message.
 // Available only for ResponsesAPI responses.
 func GetResponseID(msg *schema.Message) (string, bool) {
@@ -158,8 +175,8 @@ func GetResponseID(msg *schema.Message) (string, bool) {
 	if ok {
 		return string(responseID_), true
 	}
-	// Since registering the concat logic requires defining `arkResponseID` type,
-	// this fallback logic needs to be retained to be compatible with `string` type.
+	// When the user serializes and deserializes the message,
+	// the type will be lost and compatibility with the string type is required.
 	responseIDStr, ok := getMsgExtraValue[string](msg, keyOfResponseID)
 	if !ok {
 		return "", false
@@ -171,17 +188,22 @@ func setResponseID(msg *schema.Message, responseID string) {
 	setMsgExtra(msg, keyOfResponseID, arkResponseID(responseID))
 }
 
-func getResponseCaching(msg *schema.Message) (string, bool) {
-	caching_, ok := getMsgExtraValue[caching](msg, keyOfResponseCaching)
-	if !ok {
-		return "", false
+// GetCacheExpiration returns the cache expiration time in seconds.
+// Only available for ResponsesAPI responses.
+func GetCacheExpiration(msg *schema.Message) (expireAtSec int64, ok bool) {
+	expireAtSec_, ok := getMsgExtraValue[arkResponseCacheExpireAt](msg, keyOfResponseCacheExpireAt)
+	if ok {
+		return int64(expireAtSec_), true
 	}
-	return string(caching_), true
+	expireAtSec, ok = getMsgExtraValue[int64](msg, keyOfResponseCacheExpireAt)
+	if ok {
+		return expireAtSec, true
+	}
+	return 0, false
 }
 
-// setResponseCaching sets the cached status of the response.
-func setResponseCaching(msg *schema.Message, caching caching) {
-	setMsgExtra(msg, keyOfResponseCaching, caching)
+func setResponseCacheExpireAt(msg *schema.Message, expireAt arkResponseCacheExpireAt) {
+	setMsgExtra(msg, keyOfResponseCacheExpireAt, expireAt)
 }
 
 func getMsgExtraValue[T any](msg *schema.Message, key string) (T, bool) {
@@ -220,7 +242,7 @@ func GetFPS(part *schema.ChatMessageVideoURL) *float64 {
 	return getFPS(part.Extra)
 }
 
-func setInputVideoFPS(part *schema.MessageInputVideo, fps float64) {
+func SetInputVideoFPS(part *schema.MessageInputVideo, fps float64) {
 	if part == nil {
 		return
 	}
@@ -291,37 +313,82 @@ func SetImageSize(part *schema.ChatMessageImageURL, size string) {
 	if part.Extra == nil {
 		part.Extra = make(map[string]any)
 	}
-	part.Extra[ImageSizeKey] = size
+	setImageSize(part.Extra, size)
 }
 
 func GetImageSize(part *schema.ChatMessageImageURL) (string, bool) {
 	if part == nil {
 		return "", false
 	}
-	size, ok := part.Extra[ImageSizeKey].(string)
+	return getImageSize(part.Extra)
+}
+
+func setOutputImageSize(part *schema.MessageOutputImage, size string) {
+	if part == nil {
+		return
+	}
+	if part.Extra == nil {
+		part.Extra = make(map[string]any)
+	}
+	setImageSize(part.Extra, size)
+}
+
+func GetOutputImageSize(part *schema.MessageOutputImage) (string, bool) {
+	if part == nil {
+		return "", false
+	}
+	return getImageSize(part.Extra)
+}
+
+func setInputImageSize(part *schema.MessageInputImage, size string) {
+	if part == nil {
+		return
+	}
+	if part.Extra == nil {
+		part.Extra = make(map[string]any)
+	}
+	setImageSize(part.Extra, size)
+}
+
+func GetInputImageSize(part *schema.MessageInputImage) (string, bool) {
+	if part == nil {
+		return "", false
+	}
+	return getImageSize(part.Extra)
+}
+
+func setImageSize(extra map[string]any, size string) {
+	if extra == nil {
+		return
+	}
+	extra[ImageSizeKey] = size
+}
+
+func getImageSize(extra map[string]any) (string, bool) {
+	if extra == nil {
+		return "", false
+	}
+	size, ok := extra[ImageSizeKey].(string)
 	if !ok {
 		return "", false
 	}
 	return size, true
 }
 
-// func SetImageSize(part *schema.MessageOutputImage, size string) {
-// 	if part == nil {
-// 		return
-// 	}
-// 	if part.Extra == nil {
-// 		part.Extra = make(map[string]any)
-// 	}
-// 	part.Extra[ImageSizeKey] = size
-// }
+// SetPartial marks the message as a partial message to enable continuation (prefill) mode.
+// By pre-filling part of the assistant role's content, it guides and controls the model
+// to continue generating from existing text fragments and maintain consistency in role-play scenarios.
+// To use this, set the role of the last message in the input list to assistant and call SetPartial
+// on it. The model will then continue writing based on the message's content.
+// Only available for ResponsesAPI.
+func SetPartial(msg *schema.Message) {
+	setMsgExtra(msg, keyOfPartial, true)
+}
 
-// func GetImageSize(part *schema.MessageOutputImage) (string, bool) {
-// 	if part == nil {
-// 		return "", false
-// 	}
-// 	size, ok := part.Extra[ImageSizeKey].(string)
-// 	if !ok {
-// 		return "", false
-// 	}
-// 	return size, true
-// }
+func getPartial(msg *schema.Message) bool {
+	v, ok := getMsgExtraValue[bool](msg, keyOfPartial)
+	if !ok {
+		return false
+	}
+	return v
+}

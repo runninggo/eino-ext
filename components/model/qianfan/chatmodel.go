@@ -41,25 +41,55 @@ func GetQianfanSingletonConfig() *qianfan.Config {
 	return qianfan.GetConfig()
 }
 
+type ResponseFormat = qianfan.ResponseFormat
+
 // ChatModelConfig config for qianfan chat completion
 // see: https://cloud.baidu.com/doc/WENXINWORKSHOP/s/Wm3fhy2vb
 type ChatModelConfig struct {
-	Model                 string   // 使用的模型
-	LLMRetryCount         *int     // 重试次数
-	LLMRetryTimeout       *float32 // 重试超时时间
-	LLMRetryBackoffFactor *float32 // 重试退避因子
+	// Model is the model to use for the chat completion.
+	Model string
 
-	Temperature         *float32 // 较高的数值会使输出更加随机，而较低的数值会使其更加集中和确定，默认 0.95，范围 (0, 1.0]
-	TopP                *float32 // 影响输出文本的多样性，取值越大，生成文本的多样性越强。默认 0.7，取值范围 [0, 1.0]
-	PenaltyScore        *float64 // 通过对已生成的token增加惩罚，减少重复生成的现象。说明：值越大表示惩罚越大，取值范围：[1.0, 2.0]
-	MaxCompletionTokens *int     // 指定模型最大输出token数, [2, 2048]
-	Seed                *int     // 随机种子, (0,2147483647‌）
-	Stop                []string // 生成停止标识，当模型生成结果以stop中某个元素结尾时，停止文本生成
-	User                *string  // 表示最终用户的唯一标识符
-	FrequencyPenalty    *float64 // 指定频率惩罚，用于控制生成文本的重复程度。取值范围 [-2.0, 2.0]
-	PresencePenalty     *float64 // 指定存在惩罚，用于控制生成文本的重复程度。取值范围 [-2.0, 2.0]
-	ParallelToolCalls   *bool    // 是否并行调用工具, 默认开启
-	ResponseFormat      *qianfan.ResponseFormat
+	// LLMRetryCount is the number of times to retry a failed request.
+	LLMRetryCount *int
+
+	// LLMRetryTimeout is the timeout for each retry attempt.
+	LLMRetryTimeout *float32
+
+	// LLMRetryBackoffFactor is the backoff factor for retries.
+	LLMRetryBackoffFactor *float32
+
+	// Temperature controls the randomness of the output. A higher value makes the output more random, while a lower value makes it more focused and deterministic. Default is 0.95, range (0, 1.0].
+	Temperature *float32
+
+	// TopP controls the diversity of the output. A higher value increases the diversity of the generated text. Default is 0.7, range [0, 1.0].
+	TopP *float32
+
+	// PenaltyScore reduces the generation of repetitive tokens by adding a penalty. A higher value means a larger penalty. Range: [1.0, 2.0].
+	PenaltyScore *float64
+
+	// MaxCompletionTokens is the maximum number of tokens to generate in the completion. Range [2, 2048].
+	MaxCompletionTokens *int
+
+	// Seed is the random seed for generation. Range (0, 2147483647).
+	Seed *int
+
+	// Stop is a list of strings that will stop the generation when the model generates a token that is a suffix of one of the strings.
+	Stop []string
+
+	// User is a unique identifier representing the end-user.
+	User *string
+
+	// FrequencyPenalty specifies the frequency penalty to control the repetition of generated text. Range [-2.0, 2.0].
+	FrequencyPenalty *float64
+
+	// PresencePenalty specifies the presence penalty to control the repetition of generated text. Range [-2.0, 2.0].
+	PresencePenalty *float64
+
+	// ParallelToolCalls specifies whether to call tools in parallel. Defaults to true.
+	ParallelToolCalls *bool
+
+	// ResponseFormat specifies the format of the response.
+	ResponseFormat *ResponseFormat
 }
 
 type ChatModel struct {
@@ -305,8 +335,9 @@ func (cm *ChatModel) genRequest(input []*schema.Message, isStream bool, opts ...
 	}, opts...)
 
 	cbInput := &model.CallbackInput{
-		Messages: input,
-		Tools:    cm.rawTools,
+		Messages:   input,
+		Tools:      cm.rawTools,
+		ToolChoice: cm.toolChoice,
 		Config: &model.Config{
 			Model:       dereferenceOrZero(options.Model),
 			MaxTokens:   dereferenceOrZero(options.MaxTokens),
@@ -356,31 +387,63 @@ func (cm *ChatModel) genRequest(input []*schema.Message, isStream bool, opts ...
 		req.StreamOptions = &qianfan.StreamOptions{IncludeUsage: true}
 	}
 
-	if options.ToolChoice != nil {
-		switch *options.ToolChoice {
-		case schema.ToolChoiceForbidden:
-			req.ToolChoice = toolChoiceNone
-		case schema.ToolChoiceAllowed:
-			req.ToolChoice = toolChoiceAuto
-		case schema.ToolChoiceForced:
-			if len(req.Tools) == 0 {
-				return nil, nil, fmt.Errorf("[qianfan][genRequest] tool choice is forced but tool is not provided")
-			} else if len(req.Tools) > 1 {
-				req.ToolChoice = toolChoiceRequired
-			} else {
-				req.ToolChoice = qianfan.ToolChoice{
-					Type: "function",
-					Function: &qianfan.Function{
-						Name: req.Tools[0].Function.Name,
-					},
-				}
-			}
-		default:
-			return nil, nil, fmt.Errorf("[qianfan][genRequest] tool choice=%s not support", *options.ToolChoice)
-		}
+	err = populateToolChoice(req, options.ToolChoice, options.AllowedToolNames)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	return req, cbInput, nil
+}
+
+func populateToolChoice(req *qianfan.ChatCompletionV2Request, tc *schema.ToolChoice, allowedToolNames []string) error {
+	if tc == nil {
+		return nil
+	}
+
+	switch *tc {
+	case schema.ToolChoiceForbidden:
+		req.ToolChoice = toolChoiceNone
+	case schema.ToolChoiceAllowed:
+		req.ToolChoice = toolChoiceAuto
+	case schema.ToolChoiceForced:
+		if len(req.Tools) == 0 {
+			return fmt.Errorf("tool choice is forced but tool is not provided")
+		}
+		var onlyOneToolName string
+		if len(allowedToolNames) > 0 {
+			if len(allowedToolNames) > 1 {
+				return fmt.Errorf("only one allowed tool name can be configured")
+			}
+			allowedToolName := allowedToolNames[0]
+			toolsMap := make(map[string]bool, len(req.Tools))
+			for _, t := range req.Tools {
+				toolsMap[t.Function.Name] = true
+			}
+			if _, ok := toolsMap[allowedToolName]; !ok {
+				return fmt.Errorf("allowed tool name '%s' not found in tools list", allowedToolName)
+			}
+			onlyOneToolName = allowedToolName
+		} else if len(req.Tools) == 1 {
+			onlyOneToolName = req.Tools[0].Function.Name
+		}
+
+		if onlyOneToolName != "" {
+			req.ToolChoice = qianfan.ToolChoice{
+				Type: "function",
+				Function: &qianfan.Function{
+					Name: onlyOneToolName,
+				},
+			}
+
+		} else {
+			req.ToolChoice = toolChoiceRequired
+		}
+
+	default:
+		return fmt.Errorf("[qianfan][genRequest] tool choice=%s not support", *tc)
+	}
+
+	return nil
 }
 
 func toQianfanMultiModalMessages(input []*schema.Message) ([]chatCompletionV3Message, error) {

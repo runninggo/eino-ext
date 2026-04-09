@@ -18,18 +18,19 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"log"
 	"os"
 
+	"github.com/cloudwego/eino/schema"
 	"google.golang.org/genai"
 
 	"github.com/cloudwego/eino-ext/components/model/gemini"
-	"github.com/cloudwego/eino/schema"
 )
 
 func main() {
 	apiKey := os.Getenv("GEMINI_API_KEY")
+	modelName := os.Getenv("GEMINI_MODEL")
 
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
@@ -38,15 +39,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("NewClient of gemini failed, err=%v", err)
 	}
-	defer func() {
-		if err != nil {
-			log.Printf("close client error: %v", err)
-		}
-	}()
 
 	cm, err := gemini.NewChatModel(ctx, &gemini.Config{
 		Client: client,
-		Model:  "gemini-2.5-flash-image-preview",
+		Model:  modelName,
+		// you can set the necessary parameters for image generation
+		ImageConfig: &genai.ImageConfig{
+			AspectRatio: "16:9",
+			ImageSize:   "1K",
+		},
 		ResponseModalities: []gemini.GeminiResponseModality{
 			gemini.GeminiResponseModalityText,
 			gemini.GeminiResponseModalityImage,
@@ -75,20 +76,39 @@ func main() {
 			},
 		}
 	*/
-	resp, err := cm.Generate(ctx, []*schema.Message{
-		{
-			Role: schema.User,
-			UserInputMultiContent: []schema.MessageInputPart{
-				{
-					Type: schema.ChatMessagePartTypeText,
-					Text: "Generate an image of a cat",
-				},
+	firstUserMessage := &schema.Message{
+		Role: schema.User,
+		UserInputMultiContent: []schema.MessageInputPart{
+			{
+				Type: schema.ChatMessagePartTypeText,
+				Text: "Generate an image of a cat",
 			},
 		},
-	})
-	if err != nil {
-		log.Printf("Generate error: %v", err)
-		return
 	}
-	fmt.Printf("Assistant: %s\n", resp)
+
+	resp, err := cm.Generate(ctx, []*schema.Message{firstUserMessage})
+	if err != nil {
+		log.Fatalf("Generate error: %v", err)
+	}
+	log.Printf("\ngenerate output: \n")
+	respBody, _ := json.MarshalIndent(resp, "  ", "  ")
+	log.Printf("  body: %s\n", string(respBody))
+
+	secondUserMessage := &schema.Message{
+		Role: schema.User,
+		UserInputMultiContent: []schema.MessageInputPart{
+			{
+				Type: schema.ChatMessagePartTypeText,
+				Text: "Generate another image based on the previous image, but the cat is wearing a hat",
+			},
+		},
+	}
+
+	resp2, err := cm.Generate(ctx, []*schema.Message{firstUserMessage, resp, secondUserMessage})
+	if err != nil {
+		log.Fatalf("Generate error: %v", err)
+	}
+	log.Printf("\ngenerate output (round 2): \n")
+	respBody2, _ := json.MarshalIndent(resp2, "  ", "  ")
+	log.Printf("  body: %s\n", string(respBody2))
 }

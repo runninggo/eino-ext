@@ -89,5 +89,11 @@ Documents are automatically mapped to Qdrant points:
 
 ## References
 
-- [Eino Documentation](https://github.com/cloudwego/eino)
+- [Eino Documentation](https://www.cloudwego.io/zh/docs/eino/)
 - [Qdrant Documentation](https://qdrant.tech/documentation/)
+## Examples
+
+See the following examples for more usage:
+
+- [Default Retriever](./examples/default_retriever/)
+
