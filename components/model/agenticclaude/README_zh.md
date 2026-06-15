@@ -114,10 +114,14 @@ type Config struct {
     // 可选。
     BaseURL string
 
-    // APIKey 是 Anthropic API 密钥。
+    // APIKey 是 Anthropic API 密钥，用于直连 Anthropic API。
     // 获取地址：https://console.anthropic.com/account/keys
-    // 直接使用 Anthropic API 时必填。
+    // 设置了 AuthToken 时可选。
     APIKey string
+
+    // AuthToken 是 Anthropic auth token，用于直连 Anthropic API。
+    // 设置了 APIKey 时可选。
+    AuthToken string
 
     // Model 指定使用的 Claude 模型。
     // 必填。
@@ -173,6 +177,93 @@ type Config struct {
     // 可选。
     CacheControl *anthropic.CacheControlEphemeralParam
 }
+```
+
+对于直连 Anthropic API 的场景，鉴权配置解析规则如下：
+
+- 如果在 `Config` 中配置了 `APIKey` 或 `AuthToken`，则以 `Config` 为准，并忽略环境变量中的鉴权配置（如 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`）
+- 如果 `Config` 中未配置鉴权，则回退使用环境变量中的配置
+- 在被选中的来源内，`APIKey` 和 `AuthToken` 可以同时存在，并会原样一起透传
+- 如果两边都没有配置鉴权，client 仍可创建成功，鉴权错误会在后续实际发请求时暴露
+- 两种情况下均仍支持 `ANTHROPIC_BASE_URL`；设置了 `Config.BaseURL` 时以 `Config.BaseURL` 为准
+
+## 扩展字段说明
+
+Eino agentic schema 中的若干字段被定义为 `any` 类型，以便各模型实现挂载各自特定的数据。要消费本包产生的数据，需将这些字段类型断言为此处定义的具体类型。对于强类型的扩展字段（`ClaudeExtension`），则无需断言。
+
+### ResponseMeta
+
+`AgenticResponseMeta.ClaudeExtension` 被填充为强类型的 `*claude.ResponseMetaExtension`，因此无需类型断言。本包不使用通用的 `Extension any` 字段。
+
+```go
+// github.com/cloudwego/eino/schema/claude
+type ResponseMetaExtension struct {
+    ID           string       // 上游消息 ID
+    StopReason   string       // 生成停止的原因，例如 "end_turn"、"tool_use"
+    StopSequence string       // 命中的自定义停止序列（如有）
+    StopDetails  *StopDetails // 额外的停止信息
+}
+```
+
+```go
+ext := msg.ResponseMeta.ClaudeExtension // *claude.ResponseMetaExtension
+```
+
+### AssistantGenText 扩展
+
+`UserInputText` 没有扩展。只有 `AssistantGenText` 携带扩展：其 `ClaudeExtension` 字段被填充为强类型的 `*claude.AssistantGenTextExtension`，因此无需断言。本包不使用通用的 `Extension any` 字段。
+
+```go
+// github.com/cloudwego/eino/schema/claude
+type AssistantGenTextExtension struct {
+    Citations []*TextCitation // 附加到生成文本上的引用（如有）
+}
+```
+
+```go
+ext := block.AssistantGenText.ClaudeExtension // *claude.AssistantGenTextExtension
+```
+
+### ServerToolCall 与 ServerToolResult
+
+本包支持 Claude 的服务端（内置）工具，例如 web search、web fetch、code execution 与 tool search。对于这些 block，通用的 `any` 字段会被填充为本包定义的具体类型。
+
+`ServerToolCall.Arguments` 被填充为 `*agenticclaude.ServerToolCallArguments`，其中仅有一个字段被设置，对应被调用的工具。
+
+```go
+// package agenticclaude
+type ServerToolCallArguments struct {
+    WebSearch               *WebSearchArguments               // web_search
+    WebFetch                *WebFetchArguments                // web_fetch
+    CodeExecution           *CodeExecutionArguments           // code_execution
+    BashCodeExecution       *BashCodeExecutionArguments       // bash_code_execution
+    TextEditorCodeExecution *TextEditorCodeExecutionArguments // text_editor_code_execution
+    ToolSearchToolBm25      *ToolSearchToolBm25Arguments      // tool_search_tool_bm25
+    ToolSearchToolRegex     *ToolSearchToolRegexArguments     // tool_search_tool_regex
+}
+```
+
+```go
+args := block.ServerToolCall.Arguments.(*agenticclaude.ServerToolCallArguments)
+```
+
+`ServerToolResult.Content` 被填充为 `*agenticclaude.ServerToolResult`，其中仅有一个字段被设置，对应被调用的工具。
+
+```go
+// package agenticclaude
+type ServerToolResult struct {
+    WebSearch               *WebSearchResult               // web_search
+    WebFetch                *WebFetchResult                // web_fetch
+    CodeExecution           *CodeExecutionResult           // code_execution
+    BashCodeExecution       *BashCodeExecutionResult       // bash_code_execution
+    TextEditorCodeExecution *TextEditorCodeExecutionResult // text_editor_code_execution
+    ToolSearchToolBm25      *ToolSearchToolResult          // tool_search_tool_bm25
+    ToolSearchToolRegex     *ToolSearchToolResult          // tool_search_tool_regex
+}
+```
+
+```go
+result := block.ServerToolResult.Content.(*agenticclaude.ServerToolResult)
 ```
 
 ## 高级用法

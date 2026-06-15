@@ -667,6 +667,8 @@ func (cm *ChatModel) populateInput(params *anthropic.MessageNewParams, system []
 		msgParams = append(msgParams, msgParam)
 	}
 
+	msgParams = mergeAdjacentToolResults(msgParams)
+
 	if !hasSetMsgBreakPoint && specOptions.AutoCacheControl != nil {
 		lastMsgParam := msgParams[len(msgParams)-1]
 		lastBlock := lastMsgParam.Content[len(lastMsgParam.Content)-1]
@@ -676,6 +678,39 @@ func (cm *ChatModel) populateInput(params *anthropic.MessageNewParams, system []
 	params.Messages = msgParams
 
 	return nil
+}
+
+// mergeAdjacentToolResults merges adjacent tool-result user messages into one.
+// Anthropic requires all tool_result blocks for an assistant turn in a single
+// user message.
+func mergeAdjacentToolResults(msgParams []anthropic.MessageParam) []anthropic.MessageParam {
+	if len(msgParams) <= 1 {
+		return msgParams
+	}
+
+	result := make([]anthropic.MessageParam, 0, len(msgParams))
+	for _, mp := range msgParams {
+		if len(result) > 0 && isToolResultMessage(mp) && isToolResultMessage(result[len(result)-1]) {
+			result[len(result)-1].Content = append(result[len(result)-1].Content, mp.Content...)
+		} else {
+			result = append(result, mp)
+		}
+	}
+	return result
+}
+
+// isToolResultMessage reports whether a message consists solely of tool_result
+// content blocks.
+func isToolResultMessage(mp anthropic.MessageParam) bool {
+	if mp.Role != anthropic.MessageParamRoleUser || len(mp.Content) == 0 {
+		return false
+	}
+	for _, block := range mp.Content {
+		if block.OfToolResult == nil {
+			return false
+		}
+	}
+	return true
 }
 
 func populateToolSearchResultTools(params *anthropic.MessageNewParams, msgs []*schema.Message) error {
@@ -1241,21 +1276,40 @@ func populateContentBlockBreakPoint(block anthropic.ContentBlockParamUnion, cach
 	}
 }
 
-func convOutputMessage(resp *anthropic.Message) (*schema.Message, error) {
-	promptTokens := int(resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens)
+func toTokenUsage(u anthropic.Usage) *schema.TokenUsage {
+	promptTokens := int(u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens)
+	completionTokens := int(u.OutputTokens)
 
+	return &schema.TokenUsage{
+		PromptTokens: promptTokens,
+		PromptTokenDetails: schema.PromptTokenDetails{
+			CachedTokens: int(u.CacheReadInputTokens),
+		},
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+	}
+}
+
+func toDeltaTokenUsage(u anthropic.MessageDeltaUsage) *schema.TokenUsage {
+	promptTokens := int(u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens)
+	completionTokens := int(u.OutputTokens)
+
+	return &schema.TokenUsage{
+		PromptTokens: promptTokens,
+		PromptTokenDetails: schema.PromptTokenDetails{
+			CachedTokens: int(u.CacheReadInputTokens),
+		},
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+	}
+}
+
+func convOutputMessage(resp *anthropic.Message) (*schema.Message, error) {
 	message := &schema.Message{
 		Role: schema.Assistant,
 		ResponseMeta: &schema.ResponseMeta{
 			FinishReason: string(resp.StopReason),
-			Usage: &schema.TokenUsage{
-				PromptTokens: promptTokens,
-				PromptTokenDetails: schema.PromptTokenDetails{
-					CachedTokens: int(resp.Usage.CacheReadInputTokens),
-				},
-				CompletionTokens: int(resp.Usage.OutputTokens),
-				TotalTokens:      promptTokens + int(resp.Usage.OutputTokens),
-			},
+			Usage:        toTokenUsage(resp.Usage),
 		},
 	}
 
@@ -1358,9 +1412,7 @@ func convStreamEvent(event anthropic.MessageStreamEventUnion, streamCtx *streamC
 	case anthropic.MessageDeltaEvent:
 		result.ResponseMeta = &schema.ResponseMeta{
 			FinishReason: string(e.Delta.StopReason),
-			Usage: &schema.TokenUsage{
-				CompletionTokens: int(e.Usage.OutputTokens),
-			},
+			Usage:        toDeltaTokenUsage(e.Usage),
 		}
 		return result, nil
 
