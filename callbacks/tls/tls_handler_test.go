@@ -28,12 +28,12 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
-	"go.opentelemetry.io/otel/trace/noop"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestTLSCallback(t *testing.T) {
 	cbh := &TLSCallbackHandler{
-		Tracer:     noop.NewTracerProvider().Tracer(scopeName),
+		Tracer:     trace.NewNoopTracerProvider().Tracer(scopeName),
 		dataParser: NewDefaultDataParser(true),
 	}
 	callbacks.AppendGlobalHandlers(cbh)

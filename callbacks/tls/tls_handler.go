@@ -27,12 +27,10 @@ import (
 	"time"
 
 	sem_ai "github.com/cloudwego/eino-ext/callbacks/tls/semconv"
-	"github.com/cloudwego/eino-ext/libs/acl/opentelemetry"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/schema"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	otelsemconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -85,7 +83,7 @@ func NewTLSCallbackHandlerFromEnv(cfg *TLSConfig) (handler callbacks.Handler, sh
 
 // TLSCallbackHandler implements callbacks.Handler.
 type TLSCallbackHandler struct {
-	OtelProvider *opentelemetry.OtelProvider
+	OtelProvider *OtelProvider
 	AppName      string
 	Release      string
 	Tracer       trace.Tracer
@@ -143,25 +141,12 @@ type TLSStreamInputAsyncKey struct{}
 type TLSStreamInputAsyncVal chan struct{}
 
 func buildTLSCallbackHandler(cfg *TLSConfig, opts *options) (callbacks.Handler, func(ctx context.Context) error, error) {
-	otelOpts := []opentelemetry.Option{
-		opentelemetry.WithServiceName(cfg.AppName),
-		opentelemetry.WithExportEndpoint(cfg.TLSEndpoint),
-		opentelemetry.WithTLSInsecure(),
-		opentelemetry.WithHeaders(cfg.TLSOTLPHeader),
-		opentelemetry.WithResourceAttribute(attribute.String("tls.business_type", "gen_ai")),
-		opentelemetry.WithEnableTracing(true),
-		opentelemetry.WithEnableMetrics(false),
-	}
-	if cfg.Release != "" {
-		otelOpts = append(otelOpts, opentelemetry.WithResourceAttribute(otelsemconv.ServiceVersionKey.String(cfg.Release)))
-	}
-
-	p, err := opentelemetry.NewOpenTelemetryProvider(otelOpts...)
+	p, err := newTraceProvider(cfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("init opentelemetry provider failed: %w", err)
+		return nil, nil, fmt.Errorf("init tracing provider failed: %w", err)
 	}
 	if p == nil {
-		return nil, nil, errors.New("init opentelemetry provider failed")
+		return nil, nil, errors.New("init tracing provider failed")
 	}
 	if p.TracerProvider == nil {
 		return nil, p.Shutdown, errors.New("tracer provider is nil")
