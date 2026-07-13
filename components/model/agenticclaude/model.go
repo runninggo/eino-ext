@@ -119,7 +119,7 @@ type Config struct {
 	ExtraFields map[string]any
 
 	// CacheControl configures automatic prompt caching behavior.
-	// When non-nil, automatically applies a cache_control marker to the last
+	// Top-level cache control automatically applies a cache_control marker to the last
 	// cacheable block in the request.
 	// Optional.
 	CacheControl *anthropic.CacheControlEphemeralParam
@@ -463,11 +463,11 @@ func (m *Model) genRequestAndOptions(input []*schema.AgenticMessage, options *mo
 		req.Thinking = *m.thinking
 	}
 
-	system, messages, err := toAnthropicMessages(input)
+	sysInstruction, messages, err := toAnthropicMessages(input)
 	if err != nil {
 		return nil, nil, fmt.Errorf("convert input messages failed: %w", err)
 	}
-	req.System = system
+	req.System = sysInstruction
 	req.Messages = messages
 
 	err = m.populateTools(req, options, specOptions)

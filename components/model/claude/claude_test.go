@@ -23,8 +23,10 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
+	"github.com/anthropics/anthropic-sdk-go/vertex"
 	"github.com/bytedance/mockey"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/eino-contrib/jsonschema"
@@ -32,6 +34,7 @@ import (
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 
 	"github.com/cloudwego/eino/schema"
+	"golang.org/x/oauth2/google"
 )
 
 func TestDirectAnthropicAuthSelection(t *testing.T) {
@@ -119,6 +122,45 @@ func TestClaude(t *testing.T) {
 				},
 			},
 		}, resp)
+	})
+
+	mockey.PatchConvey("legacy thinking config", t, func() {
+		resp, err := model.genMessageNewParams([]*schema.Message{
+			schema.UserMessage("hello"),
+		}, WithThinking(&Thinking{
+			Enable:       true,
+			BudgetTokens: 1024,
+		}))
+		assert.NoError(t, err)
+		assert.NotNil(t, resp.Thinking.OfEnabled)
+		assert.Equal(t, int64(1024), resp.Thinking.OfEnabled.BudgetTokens)
+	})
+
+	mockey.PatchConvey("native adaptive thinking config", t, func() {
+		resp, err := model.genMessageNewParams([]*schema.Message{
+			schema.UserMessage("hello"),
+		}, WithThinkingConfig(&anthropic.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
+				Display: anthropic.ThinkingConfigAdaptiveDisplayOmitted,
+			},
+		}))
+		assert.NoError(t, err)
+		assert.NotNil(t, resp.Thinking.OfAdaptive)
+		assert.Equal(t, anthropic.ThinkingConfigAdaptiveDisplayOmitted, resp.Thinking.OfAdaptive.Display)
+	})
+
+	mockey.PatchConvey("native thinking config overrides legacy thinking", t, func() {
+		resp, err := model.genMessageNewParams([]*schema.Message{
+			schema.UserMessage("hello"),
+		}, WithThinking(&Thinking{
+			Enable:       true,
+			BudgetTokens: 1024,
+		}), WithThinkingConfig(&anthropic.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{},
+		}))
+		assert.NoError(t, err)
+		assert.Nil(t, resp.Thinking.OfEnabled)
+		assert.NotNil(t, resp.Thinking.OfAdaptive)
 	})
 
 	mockey.PatchConvey("basic chat", t, func() {
@@ -346,14 +388,20 @@ func TestConvStreamEvent(t *testing.T) {
 				StopReason: "end_turn",
 			},
 			Usage: anthropic.MessageDeltaUsage{
-				OutputTokens: 10,
+				InputTokens:              8,
+				CacheReadInputTokens:     3,
+				CacheCreationInputTokens: 2,
+				OutputTokens:             10,
 			},
 		}).Build().UnPatch()
 
 		message, err := convStreamEvent(event, streamCtx)
 		assert.NoError(t, err)
 		assert.Equal(t, "end_turn", message.ResponseMeta.FinishReason)
+		assert.Equal(t, 13, message.ResponseMeta.Usage.PromptTokens)
+		assert.Equal(t, 3, message.ResponseMeta.Usage.PromptTokenDetails.CachedTokens)
 		assert.Equal(t, 10, message.ResponseMeta.Usage.CompletionTokens)
+		assert.Equal(t, 23, message.ResponseMeta.Usage.TotalTokens)
 	})
 
 	mockey.PatchConvey("content block start event", t, func() {
@@ -1160,5 +1208,64 @@ func TestPopulateInputMergeConsecutiveTools(t *testing.T) {
 		// Merged tool message has 2 tool_result blocks
 		assert.Equal(t, anthropic.MessageParamRoleUser, params.Messages[2].Role)
 		assert.Len(t, params.Messages[2].Content, 2)
+	})
+}
+
+func TestVertexServiceAccountJSON(t *testing.T) {
+	ctx := context.Background()
+	base := &Config{
+		ByVertex:        true,
+		VertexProjectID: "test-project",
+		VertexRegion:    "us-east5",
+		Model:           "claude-3-opus-20240229",
+		MaxTokens:       1,
+	}
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		cfg := *base
+		cfg.VertexServiceAccountJSON = []byte(`not-json`)
+		_, err := NewChatModel(ctx, &cfg)
+		assert.Error(t, err)
+		assert.ErrorContains(t, err, "create vertex credentials from service account JSON")
+	})
+
+	t.Run("ADC path when service account JSON empty", func(t *testing.T) {
+		mockey.PatchConvey("", t, func() {
+			var calledWithGoogleAuth bool
+			mockey.Mock(vertex.WithGoogleAuth).To(func(ctx context.Context, region, projectID string, scopes ...string) option.RequestOption {
+				calledWithGoogleAuth = true
+				assert.Equal(t, "us-east5", region)
+				assert.Equal(t, "test-project", projectID)
+				return option.WithAPIKey("adc-test")
+			}).Build()
+
+			model, err := NewChatModel(ctx, base)
+			assert.NoError(t, err)
+			assert.NotNil(t, model)
+			assert.True(t, calledWithGoogleAuth, "expected vertex.WithGoogleAuth to be called for ADC path")
+		})
+	})
+
+	t.Run("service account JSON uses WithCredentials path", func(t *testing.T) {
+		mockey.PatchConvey("", t, func() {
+			var calledWithCredentials bool
+			mockey.Mock(google.CredentialsFromJSON).Return(&google.Credentials{
+				ProjectID: "from-sa",
+			}, nil).Build()
+			mockey.Mock(vertex.WithCredentials).To(func(ctx context.Context, region, projectID string, creds *google.Credentials) option.RequestOption {
+				calledWithCredentials = true
+				assert.Equal(t, "us-east5", region)
+				assert.Equal(t, "test-project", projectID)
+				assert.Equal(t, "from-sa", creds.ProjectID)
+				return option.WithAPIKey("sa-test")
+			}).Build()
+
+			cfg := *base
+			cfg.VertexServiceAccountJSON = []byte(`{"type":"service_account","project_id":"from-sa"}`)
+			model, err := NewChatModel(ctx, &cfg)
+			assert.NoError(t, err)
+			assert.NotNil(t, model)
+			assert.True(t, calledWithCredentials, "expected vertex.WithCredentials to be called for service account path")
+		})
 	})
 }
