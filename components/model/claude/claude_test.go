@@ -76,7 +76,7 @@ func TestClaude(t *testing.T) {
 	assert.NoError(t, err)
 
 	mockey.PatchConvey("requires at least 1 user msg", t, func() {
-		_, err := model.genMessageNewParams([]*schema.Message{
+		_, _, err := model.genParamsAndOptions([]*schema.Message{
 			schema.SystemMessage("hello"),
 		})
 		assert.Error(t, err)
@@ -84,7 +84,7 @@ func TestClaude(t *testing.T) {
 	})
 
 	mockey.PatchConvey("first non system msg should be user", t, func() {
-		_, err := model.genMessageNewParams([]*schema.Message{
+		_, _, err := model.genParamsAndOptions([]*schema.Message{
 			schema.SystemMessage("hello"),
 			schema.AssistantMessage("world", nil),
 		})
@@ -93,7 +93,7 @@ func TestClaude(t *testing.T) {
 	})
 
 	mockey.PatchConvey("multiple system msg", t, func() {
-		resp, err := model.genMessageNewParams([]*schema.Message{
+		resp, _, err := model.genParamsAndOptions([]*schema.Message{
 			schema.SystemMessage("hello"),
 			schema.SystemMessage("world"),
 			schema.UserMessage("again"),
@@ -125,7 +125,7 @@ func TestClaude(t *testing.T) {
 	})
 
 	mockey.PatchConvey("legacy thinking config", t, func() {
-		resp, err := model.genMessageNewParams([]*schema.Message{
+		resp, _, err := model.genParamsAndOptions([]*schema.Message{
 			schema.UserMessage("hello"),
 		}, WithThinking(&Thinking{
 			Enable:       true,
@@ -137,7 +137,7 @@ func TestClaude(t *testing.T) {
 	})
 
 	mockey.PatchConvey("native adaptive thinking config", t, func() {
-		resp, err := model.genMessageNewParams([]*schema.Message{
+		resp, _, err := model.genParamsAndOptions([]*schema.Message{
 			schema.UserMessage("hello"),
 		}, WithThinkingConfig(&anthropic.ThinkingConfigParamUnion{
 			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
@@ -150,7 +150,7 @@ func TestClaude(t *testing.T) {
 	})
 
 	mockey.PatchConvey("native thinking config overrides legacy thinking", t, func() {
-		resp, err := model.genMessageNewParams([]*schema.Message{
+		resp, _, err := model.genParamsAndOptions([]*schema.Message{
 			schema.UserMessage("hello"),
 		}, WithThinking(&Thinking{
 			Enable:       true,
@@ -180,6 +180,9 @@ func TestClaude(t *testing.T) {
 			Usage: anthropic.Usage{
 				InputTokens:  10,
 				OutputTokens: 5,
+				OutputTokensDetails: anthropic.OutputTokensDetails{
+					ThinkingTokens: 3,
+				},
 			},
 		}, nil).Build().UnPatch()
 
@@ -195,6 +198,7 @@ func TestClaude(t *testing.T) {
 		assert.Equal(t, schema.Assistant, resp.Role)
 		assert.Equal(t, 10, resp.ResponseMeta.Usage.PromptTokens)
 		assert.Equal(t, 5, resp.ResponseMeta.Usage.CompletionTokens)
+		assert.Equal(t, 3, resp.ResponseMeta.Usage.CompletionTokensDetails.ReasoningTokens)
 	})
 
 	mockey.PatchConvey("function calling", t, func() {
@@ -327,6 +331,9 @@ func TestConvStreamEvent(t *testing.T) {
 				Usage: anthropic.Usage{
 					InputTokens:  5,
 					OutputTokens: 2,
+					OutputTokensDetails: anthropic.OutputTokensDetails{
+						ThinkingTokens: 1,
+					},
 				},
 			},
 		}).Build().UnPatch()
@@ -337,6 +344,7 @@ func TestConvStreamEvent(t *testing.T) {
 		assert.Equal(t, schema.Assistant, message.Role)
 		assert.Equal(t, 5, message.ResponseMeta.Usage.PromptTokens)
 		assert.Equal(t, 2, message.ResponseMeta.Usage.CompletionTokens)
+		assert.Equal(t, 1, message.ResponseMeta.Usage.CompletionTokensDetails.ReasoningTokens)
 	})
 
 	mockey.PatchConvey("content block delta event - text", t, func() {
@@ -392,6 +400,9 @@ func TestConvStreamEvent(t *testing.T) {
 				CacheReadInputTokens:     3,
 				CacheCreationInputTokens: 2,
 				OutputTokens:             10,
+				OutputTokensDetails: anthropic.OutputTokensDetails{
+					ThinkingTokens: 4,
+				},
 			},
 		}).Build().UnPatch()
 
@@ -402,6 +413,7 @@ func TestConvStreamEvent(t *testing.T) {
 		assert.Equal(t, 3, message.ResponseMeta.Usage.PromptTokenDetails.CachedTokens)
 		assert.Equal(t, 10, message.ResponseMeta.Usage.CompletionTokens)
 		assert.Equal(t, 23, message.ResponseMeta.Usage.TotalTokens)
+		assert.Equal(t, 4, message.ResponseMeta.Usage.CompletionTokensDetails.ReasoningTokens)
 	})
 
 	mockey.PatchConvey("content block start event", t, func() {
@@ -921,7 +933,7 @@ func TestCacheTTL(t *testing.T) {
 		sysMsg := schema.SystemMessage("system")
 		bpSys := SetMessageCacheControl(sysMsg, &CacheControl{TTL: CacheTTL1h})
 
-		params, err := cm.genMessageNewParams([]*schema.Message{bpSys, msg})
+		params, _, err := cm.genParamsAndOptions([]*schema.Message{bpSys, msg})
 		assert.NoError(t, err)
 		assert.Equal(t, CacheTTL1h, params.System[0].CacheControl.TTL)
 	})
@@ -931,7 +943,7 @@ func TestCacheTTL(t *testing.T) {
 		msg := schema.UserMessage("hello")
 		sysMsg := schema.SystemMessage("system")
 
-		params, err := cm.genMessageNewParams(
+		params, _, err := cm.genParamsAndOptions(
 			[]*schema.Message{sysMsg, msg},
 			WithAutoCacheControl(&CacheControl{TTL: CacheTTL1h}),
 		)
@@ -1127,7 +1139,7 @@ func TestPopulateInputMergeConsecutiveTools(t *testing.T) {
 	}
 
 	t.Run("single tool message unchanged", func(t *testing.T) {
-		params, err := cm.genMessageNewParams([]*schema.Message{
+		params, _, err := cm.genParamsAndOptions([]*schema.Message{
 			schema.UserMessage("hello"),
 			toolMsg("call_1", "tool1", "result1"),
 		})
@@ -1139,7 +1151,7 @@ func TestPopulateInputMergeConsecutiveTools(t *testing.T) {
 	})
 
 	t.Run("two consecutive tool messages merged", func(t *testing.T) {
-		params, err := cm.genMessageNewParams([]*schema.Message{
+		params, _, err := cm.genParamsAndOptions([]*schema.Message{
 			schema.UserMessage("hello"),
 			toolMsg("call_1", "tool1", "result1"),
 			toolMsg("call_2", "tool2", "result2"),
@@ -1152,7 +1164,7 @@ func TestPopulateInputMergeConsecutiveTools(t *testing.T) {
 	})
 
 	t.Run("three consecutive tools merged", func(t *testing.T) {
-		params, err := cm.genMessageNewParams([]*schema.Message{
+		params, _, err := cm.genParamsAndOptions([]*schema.Message{
 			schema.UserMessage("hello"),
 			toolMsg("call_1", "t1", "r1"),
 			toolMsg("call_2", "t2", "r2"),
@@ -1164,7 +1176,7 @@ func TestPopulateInputMergeConsecutiveTools(t *testing.T) {
 	})
 
 	t.Run("tool messages separated by non-tool are not merged", func(t *testing.T) {
-		params, err := cm.genMessageNewParams([]*schema.Message{
+		params, _, err := cm.genParamsAndOptions([]*schema.Message{
 			schema.UserMessage("hello"),
 			toolMsg("call_1", "t1", "r1"),
 			schema.AssistantMessage("ok", nil),
@@ -1178,7 +1190,7 @@ func TestPopulateInputMergeConsecutiveTools(t *testing.T) {
 	})
 
 	t.Run("no tool messages unchanged", func(t *testing.T) {
-		params, err := cm.genMessageNewParams([]*schema.Message{
+		params, _, err := cm.genParamsAndOptions([]*schema.Message{
 			schema.UserMessage("hello"),
 			schema.AssistantMessage("hi", nil),
 		})
@@ -1187,7 +1199,7 @@ func TestPopulateInputMergeConsecutiveTools(t *testing.T) {
 	})
 
 	t.Run("real world pattern: user assistant(tool_calls) tool tool", func(t *testing.T) {
-		params, err := cm.genMessageNewParams([]*schema.Message{
+		params, _, err := cm.genParamsAndOptions([]*schema.Message{
 			schema.UserMessage("what's the weather in Paris and London?"),
 			{
 				Role:    schema.Assistant,
